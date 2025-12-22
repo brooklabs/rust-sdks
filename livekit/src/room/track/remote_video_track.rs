@@ -14,7 +14,7 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use libwebrtc::{prelude::*, stats::RtcStats};
+use libwebrtc::{prelude::*, rtp_receiver::RtpReceiver, stats::RtcStats};
 use livekit_protocol as proto;
 
 use super::{remote_track, TrackInner};
@@ -108,6 +108,12 @@ impl RemoteVideoTrack {
 
     pub(crate) fn transceiver(&self) -> Option<RtpTransceiver> {
         self.inner.info.read().transceiver.clone()
+    }
+
+    /// Get the RTP receiver for this track.
+    /// This can be used to attach a frame transformer for intercepting encoded frames.
+    pub fn rtp_receiver(&self) -> Option<RtpReceiver> {
+        self.transceiver().map(|t| t.receiver())
     }
 
     pub(crate) fn set_transceiver(&self, transceiver: Option<RtpTransceiver>) {
