@@ -20,8 +20,9 @@ use webrtc_sys::frame_transformer::{self as sys_ft};
 
 use crate::{peer_connection_factory::PeerConnectionFactory, rtp_receiver::RtpReceiver};
 
-/// Callback type for receiving encoded frames
-pub type OnEncodedFrame = Box<dyn FnMut(EncodedFrameData) + Send + Sync>;
+/// Callback type for receiving encoded frames.
+/// Uses Arc to allow cloning without holding the lock during invocation.
+pub type OnEncodedFrame = Arc<dyn Fn(EncodedFrameData) + Send + Sync>;
 
 /// Metadata about an encoded frame
 #[derive(Debug, Clone)]
@@ -77,8 +78,18 @@ impl RecorderFrameTransformer {
         self.sys_handle.enabled()
     }
 
-    /// Set handler for encoded frames
-    pub fn on_encoded_frame(&self, handler: Option<OnEncodedFrame>) {
+    /// Set handler for encoded frames.
+    /// The handler is wrapped in Arc to allow lock-free invocation.
+    pub fn on_encoded_frame<F>(&self, handler: Option<F>)
+    where
+        F: Fn(EncodedFrameData) + Send + Sync + 'static,
+    {
+        *self.observer.frame_handler.lock() = handler.map(|f| Arc::new(f) as OnEncodedFrame);
+    }
+
+    /// Set handler for encoded frames using a pre-wrapped Arc.
+    /// Useful when the same handler needs to be shared across multiple transformers.
+    pub fn on_encoded_frame_arc(&self, handler: Option<OnEncodedFrame>) {
         *self.observer.frame_handler.lock() = handler;
     }
 }
@@ -90,8 +101,11 @@ struct RtcFrameTransformerObserver {
 
 impl sys_ft::FrameTransformerObserver for RtcFrameTransformerObserver {
     fn on_encoded_frame(&self, frame: sys_ft::EncodedFrameData) {
-        let mut handler = self.frame_handler.lock();
-        if let Some(f) = handler.as_mut() {
+        // Clone the Arc under lock, then release lock before invoking callback.
+        // This prevents deadlock if the callback tries to modify the handler
+        // or call other transformer methods.
+        let handler = self.frame_handler.lock().clone();
+        if let Some(f) = handler {
             f(frame.into());
         }
     }

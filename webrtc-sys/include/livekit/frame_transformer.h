@@ -18,6 +18,7 @@
 
 #include <stdint.h>
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
@@ -55,16 +56,24 @@ class RecorderFrameTransformerImpl
       webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback) override;
   void UnregisterTransformedFrameCallback() override;
 
-  // Control methods
+  // Control methods - lock-free using atomic
   void set_enabled(bool enabled);
   bool enabled() const;
 
  private:
+  // Extract frame data without holding any locks
+  EncodedFrameData ExtractFrameData(
+      webrtc::TransformableFrameInterface* frame) const;
+
   std::shared_ptr<PeerConnectionFactory> peer_factory_;
   rust::Box<RtcFrameTransformerObserverWrapper> observer_;
-  mutable webrtc::Mutex mutex_;
+
+  // Mutex only protects callback registration, not the hot path
+  mutable webrtc::Mutex callback_mutex_;
   webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback_;
-  bool enabled_ = true;
+
+  // Atomic for lock-free enabled check on hot path
+  std::atomic<bool> enabled_{true};
 };
 
 // Wrapper class that can be exposed via cxx (using shared_ptr)
