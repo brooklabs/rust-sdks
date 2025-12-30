@@ -16,6 +16,7 @@
 
 #include "livekit/frame_transformer.h"
 
+#include <iostream>
 #include <memory>
 
 #include "api/make_ref_counted.h"
@@ -33,6 +34,61 @@ RecorderFrameTransformerImpl::RecorderFrameTransformerImpl(
     rust::Box<RtcFrameTransformerObserverWrapper> observer)
     : peer_factory_(peer_factory), observer_(std::move(observer)) {
   RTC_LOG(LS_INFO) << "RecorderFrameTransformerImpl created";
+  std::cerr << "[CPP_PTS_CHECK] PTS gap detection enabled (threshold inferred from frame rate)" << std::endl;
+}
+
+void RecorderFrameTransformerImpl::CheckPtsAndLog(uint32_t ssrc,
+                                                  uint32_t current_pts) {
+  webrtc::MutexLock lock(&pts_mutex_);
+
+  auto& state = ssrc_pts_state_[ssrc];
+  state.frame_count++;
+
+  // Set first_pts for normalization if not already set
+  if (!state.first_pts.has_value()) {
+    state.first_pts = current_pts;
+  }
+
+  if (state.last_pts.has_value()) {
+    uint32_t last_pts = state.last_pts.value();
+    uint32_t normalized_pts = current_pts - state.first_pts.value();
+
+    if (current_pts < last_pts) {
+      // Out-of-order frame (new_pts < last_pts)
+      uint32_t pts_diff = last_pts - current_pts;
+      std::cerr << "[CPP_OUT_OF_ORDER_FRAME_WARNING] ssrc=" << ssrc
+                << " Frame arrived out of order (new_pts < last_pts by "
+                << pts_diff << "). last_pts=" << last_pts
+                << " new_pts=" << current_pts
+                << " normalized_pts=" << normalized_pts << std::endl;
+    } else {
+      uint32_t pts_gap = current_pts - last_pts;
+
+      // On the 2nd frame, infer the expected PTS gap from the frame rate
+      if (state.frame_count == 2 && !state.expected_pts_gap.has_value()) {
+        state.expected_pts_gap = pts_gap;
+        std::cerr << "[CPP_PTS_CHECK] ssrc=" << ssrc
+                  << " Inferred expected_pts_gap=" << pts_gap
+                  << " from first 2 frames" << std::endl;
+      }
+
+      // Only check for skipped frames if we have an expected gap
+      if (state.expected_pts_gap.has_value()) {
+        // Use 1.5x the expected gap as threshold for detecting skipped frames
+        uint32_t threshold = state.expected_pts_gap.value() + (state.expected_pts_gap.value() / 2);
+        if (pts_gap > threshold) {
+          std::cerr << "[CPP_SKIPPED_FRAME_WARNING] ssrc=" << ssrc
+                    << " Detected a pts gap of " << pts_gap
+                    << " (> " << threshold << ", expected ~" << state.expected_pts_gap.value()
+                    << "). Most likely means that a frame got dropped upstream."
+                    << " last_pts=" << last_pts << " new_pts=" << current_pts
+                    << " normalized_pts=" << normalized_pts << std::endl;
+        }
+      }
+    }
+  }
+
+  state.last_pts = current_pts;
 }
 
 EncodedFrameData RecorderFrameTransformerImpl::ExtractFrameData(
@@ -75,6 +131,9 @@ EncodedFrameData RecorderFrameTransformerImpl::ExtractFrameData(
 
 void RecorderFrameTransformerImpl::Transform(
     std::unique_ptr<webrtc::TransformableFrameInterface> frame) {
+  // Always check PTS for debugging, regardless of enabled state
+  CheckPtsAndLog(frame->GetSsrc(), frame->GetTimestamp());
+
   // Check enabled flag atomically - no lock needed
   if (enabled_.load(std::memory_order_acquire)) {
     // Extract frame data without holding any lock

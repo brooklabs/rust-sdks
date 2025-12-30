@@ -21,7 +21,9 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "api/frame_transformer_interface.h"
@@ -40,6 +42,14 @@ class RtcFrameTransformerObserverWrapper;
 // Forward declare the ffi types that cxx will generate
 struct EncodedFrameInfo;
 struct EncodedFrameData;
+
+// Per-SSRC state for PTS tracking
+struct SsrcPtsState {
+  std::optional<uint32_t> last_pts;
+  std::optional<uint32_t> first_pts;  // For normalization
+  std::optional<uint32_t> expected_pts_gap;  // Inferred from first 2 frames
+  uint32_t frame_count = 0;  // Number of frames received for this SSRC
+};
 
 // Internal frame transformer implementation that inherits from FrameTransformerInterface
 class RecorderFrameTransformerImpl
@@ -65,6 +75,9 @@ class RecorderFrameTransformerImpl
   EncodedFrameData ExtractFrameData(
       webrtc::TransformableFrameInterface* frame) const;
 
+  // Check PTS for gaps or out-of-order frames and log warnings
+  void CheckPtsAndLog(uint32_t ssrc, uint32_t current_pts);
+
   std::shared_ptr<PeerConnectionFactory> peer_factory_;
   rust::Box<RtcFrameTransformerObserverWrapper> observer_;
 
@@ -74,6 +87,10 @@ class RecorderFrameTransformerImpl
 
   // Atomic for lock-free enabled check on hot path
   std::atomic<bool> enabled_{true};
+
+  // Per-SSRC PTS tracking for detecting skipped/out-of-order frames
+  mutable webrtc::Mutex pts_mutex_;
+  std::unordered_map<uint32_t, SsrcPtsState> ssrc_pts_state_;
 };
 
 // Wrapper class that can be exposed via cxx (using shared_ptr)
