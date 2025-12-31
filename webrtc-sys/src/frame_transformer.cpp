@@ -116,11 +116,11 @@ EncodedFrameData RecorderFrameTransformerImpl::ExtractFrameData(
   }
 
   // Copy frame data to Rust-compatible vector
+  // Use std::copy for better compiler optimization (vectorization, loop unrolling)
+  // compared to manual byte-by-byte push_back loop
   rust::Vec<uint8_t> frame_data;
   frame_data.reserve(data.size());
-  for (size_t i = 0; i < data.size(); ++i) {
-    frame_data.push_back(data[i]);
-  }
+  std::copy(data.begin(), data.end(), std::back_inserter(frame_data));
 
   EncodedFrameData encoded_frame;
   encoded_frame.data = std::move(frame_data);

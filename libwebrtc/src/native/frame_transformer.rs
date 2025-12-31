@@ -126,7 +126,9 @@ impl From<sys_ft::ffi::EncodedFrameInfo> for EncodedFrameInfo {
 impl From<sys_ft::ffi::EncodedFrameData> for EncodedFrameData {
     fn from(value: sys_ft::ffi::EncodedFrameData) -> Self {
         Self {
-            data: value.data.into_iter().collect(),
+            // Move the Vec directly instead of copying via into_iter().collect()
+            // Both types are Vec<u8>, so this is a zero-cost move
+            data: value.data,
             info: value.info.into(),
         }
     }
