@@ -26,6 +26,8 @@ pub mod ffi {
         pub is_key_frame: bool,
         pub capture_time_ms: i64,
         pub codec_mime_type: String,
+        /// Frame ID from VideoFrameMetadata - should be sequential, -1 if not available
+        pub frame_id: i64,
     }
 
     /// The encoded frame data passed to Rust

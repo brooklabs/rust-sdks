@@ -64,7 +64,11 @@ class RecorderFrameTransformerImpl
       std::unique_ptr<webrtc::TransformableFrameInterface> frame) override;
   void RegisterTransformedFrameCallback(
       webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback) override;
+  void RegisterTransformedFrameSinkCallback(
+      webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback,
+      uint32_t ssrc) override;
   void UnregisterTransformedFrameCallback() override;
+  void UnregisterTransformedFrameSinkCallback(uint32_t ssrc) override;
 
   // Control methods - lock-free using atomic
   void set_enabled(bool enabled);
@@ -84,6 +88,8 @@ class RecorderFrameTransformerImpl
   // Mutex only protects callback registration, not the hot path
   mutable webrtc::Mutex callback_mutex_;
   webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback_;
+  // SSRC-specific callbacks (used by WebRTC for receiver transformers)
+  std::unordered_map<uint32_t, webrtc::scoped_refptr<webrtc::TransformedFrameCallback>> ssrc_callbacks_;
 
   // Atomic for lock-free enabled check on hot path
   std::atomic<bool> enabled_{true};

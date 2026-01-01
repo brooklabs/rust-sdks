@@ -18,6 +18,7 @@
 
 #include <iostream>
 #include <memory>
+#include <set>
 
 #include "api/make_ref_counted.h"
 #include "livekit/rtp_receiver.h"
@@ -100,6 +101,7 @@ EncodedFrameData RecorderFrameTransformerImpl::ExtractFrameData(
   info.timestamp = frame->GetTimestamp();
   info.is_key_frame = false;
   info.capture_time_ms = 0;
+  info.frame_id = -1;  // Default to -1 if not available
 
   // Get mime type from the frame
   info.codec_mime_type = rust::String(frame->GetMimeType());
@@ -112,6 +114,13 @@ EncodedFrameData RecorderFrameTransformerImpl::ExtractFrameData(
     auto capture_time = frame->CaptureTime();
     if (capture_time.has_value()) {
       info.capture_time_ms = capture_time->ms();
+    }
+    // Extract frame_id from VideoFrameMetadata - this is sequential and
+    // better for detecting dropped frames than PTS
+    auto metadata = video_frame->Metadata();
+    auto frame_id = metadata.GetFrameId();
+    if (frame_id.has_value()) {
+      info.frame_id = frame_id.value();
     }
   }
 
@@ -145,23 +154,38 @@ void RecorderFrameTransformerImpl::Transform(
   }
 
   // Get callback under lock, but call it outside the lock
+  // First try SSRC-specific callback, then fall back to generic callback
   webrtc::scoped_refptr<webrtc::TransformedFrameCallback> cb;
+  uint32_t frame_ssrc = frame->GetSsrc();
   {
     webrtc::MutexLock lock(&callback_mutex_);
-    cb = callback_;
+    auto it = ssrc_callbacks_.find(frame_ssrc);
+    if (it != ssrc_callbacks_.end()) {
+      cb = it->second;
+    } else {
+      cb = callback_;
+    }
   }
 
   // Pass the frame through to the decoder if callback is available
   // This is called outside the lock to avoid holding mutex during WebRTC callback
   if (cb) {
     cb->OnTransformedFrame(std::move(frame));
+  } else {
+    // Log once that we're dropping frames due to no callback
+    static bool logged_once = false;
+    if (!logged_once) {
+      std::cerr << "[CPP_FRAME_TRANSFORMER] WARNING: No callback registered for ssrc=" << frame_ssrc
+                << ", frames not forwarded to decoder (decoder starvation)" << std::endl;
+      logged_once = true;
+    }
   }
-  // Note: If no callback, frame is dropped (not passed to decoder)
-  // This is fine for recording - we just captured the data above
 }
 
 void RecorderFrameTransformerImpl::RegisterTransformedFrameCallback(
     webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback) {
+  std::cerr << "[CPP_FRAME_TRANSFORMER] RegisterTransformedFrameCallback called, callback="
+            << (callback ? "valid" : "null") << std::endl;
   RTC_LOG(LS_INFO) << "RegisterTransformedFrameCallback called, callback="
                    << (callback ? "valid" : "null");
   webrtc::MutexLock lock(&callback_mutex_);
@@ -171,6 +195,27 @@ void RecorderFrameTransformerImpl::RegisterTransformedFrameCallback(
 void RecorderFrameTransformerImpl::UnregisterTransformedFrameCallback() {
   webrtc::MutexLock lock(&callback_mutex_);
   callback_ = nullptr;
+}
+
+void RecorderFrameTransformerImpl::RegisterTransformedFrameSinkCallback(
+    webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback,
+    uint32_t ssrc) {
+  std::cerr << "[CPP_FRAME_TRANSFORMER] RegisterTransformedFrameSinkCallback called for ssrc="
+            << ssrc << ", callback=" << (callback ? "valid" : "null") << std::endl;
+  RTC_LOG(LS_INFO) << "RegisterTransformedFrameSinkCallback called for ssrc=" << ssrc
+                   << ", callback=" << (callback ? "valid" : "null");
+  webrtc::MutexLock lock(&callback_mutex_);
+  if (callback) {
+    ssrc_callbacks_[ssrc] = callback;
+  } else {
+    ssrc_callbacks_.erase(ssrc);
+  }
+}
+
+void RecorderFrameTransformerImpl::UnregisterTransformedFrameSinkCallback(uint32_t ssrc) {
+  std::cerr << "[CPP_FRAME_TRANSFORMER] UnregisterTransformedFrameSinkCallback called for ssrc=" << ssrc << std::endl;
+  webrtc::MutexLock lock(&callback_mutex_);
+  ssrc_callbacks_.erase(ssrc);
 }
 
 void RecorderFrameTransformerImpl::set_enabled(bool enabled) {
@@ -209,13 +254,16 @@ std::shared_ptr<RecorderFrameTransformer> new_recorder_frame_transformer(
 void set_rtp_receiver_frame_transformer(
     std::shared_ptr<RtpReceiver> receiver,
     std::shared_ptr<RecorderFrameTransformer> transformer) {
+  std::cerr << "[CPP_FRAME_TRANSFORMER] set_rtp_receiver_frame_transformer called" << std::endl;
   RTC_LOG(LS_INFO) << "set_rtp_receiver_frame_transformer called";
 
   auto rtc_receiver = receiver->rtc_receiver();
   auto impl = transformer->impl();
 
+  std::cerr << "[CPP_FRAME_TRANSFORMER] Attaching frame transformer to RTP receiver via SetDepacketizerToDecoderFrameTransformer" << std::endl;
   RTC_LOG(LS_INFO) << "Attaching frame transformer to RTP receiver";
   rtc_receiver->SetDepacketizerToDecoderFrameTransformer(impl);
+  std::cerr << "[CPP_FRAME_TRANSFORMER] SetDepacketizerToDecoderFrameTransformer returned" << std::endl;
 }
 
 }  // namespace livekit

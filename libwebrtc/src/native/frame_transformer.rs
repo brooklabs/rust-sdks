@@ -32,6 +32,8 @@ pub struct EncodedFrameInfo {
     pub is_key_frame: bool,
     pub capture_time_ms: i64,
     pub codec_mime_type: String,
+    /// Frame ID from VideoFrameMetadata - sequential, -1 if not available
+    pub frame_id: i64,
 }
 
 /// Encoded frame data with metadata
@@ -119,6 +121,7 @@ impl From<sys_ft::ffi::EncodedFrameInfo> for EncodedFrameInfo {
             is_key_frame: value.is_key_frame,
             capture_time_ms: value.capture_time_ms,
             codec_mime_type: value.codec_mime_type,
+            frame_id: value.frame_id,
         }
     }
 }
