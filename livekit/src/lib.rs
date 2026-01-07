@@ -15,7 +15,7 @@
 mod plugin;
 pub mod proto;
 mod room;
-mod rtc_engine;
+pub mod rtc_engine;
 
 pub mod webrtc {
     pub use libwebrtc::*;
