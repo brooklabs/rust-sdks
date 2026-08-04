@@ -136,6 +136,9 @@ impl FfiRoom {
 
         let req = connect.clone();
         let mut options: RoomOptions = connect.options.into();
+        // Ultra local FEC rig: the FFI protocol has no flexfec field, so hardcode
+        // publisher-side FlexFEC-03 on for every room this dylib connects.
+        options.flexfec = Some(livekit::options::FlexFecOptions::default());
 
         {
             let config = server.config.lock();
