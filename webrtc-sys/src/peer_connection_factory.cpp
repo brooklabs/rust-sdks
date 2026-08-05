@@ -16,7 +16,9 @@
 
 #include "livekit/peer_connection_factory.h"
 
+#include <map>
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
@@ -55,6 +57,47 @@ constexpr char kForcePlayoutDelayFieldTrial[] =
     "WebRTC-ForcePlayoutDelay/min_ms:0,max_ms:0/";
 constexpr char kForcePlayoutDelayValue[] = "min_ms:0,max_ms:0";
 
+// webrtc::FieldTrials is declared in api/field_trials.h but NOT compiled into
+// LiveKit's linux-x64 libwebrtc prebuilt for WEBRTC_TAG (mac-arm64 at the same
+// tag has all 842 of its symbols; linux has only the FieldTrialsRegistry base),
+// so calling FieldTrials::Create leaves liblivekit_ffi.so with an undefined
+// symbol and it fails to dlopen on linux. Parse the trial string here instead —
+// the format is "Key/Value/Key/Value/", same as FieldTrials::Create accepts.
+class StringFieldTrials final : public webrtc::FieldTrialsView {
+ public:
+  // Returns nullptr for a malformed string, matching FieldTrials::Create.
+  static std::unique_ptr<StringFieldTrials> Create(absl::string_view s) {
+    std::map<std::string, std::string> trials;
+    size_t pos = 0;
+    while (pos < s.size()) {
+      const size_t key_end = s.find('/', pos);
+      if (key_end == absl::string_view::npos || key_end == pos) return nullptr;
+      const size_t value_end = s.find('/', key_end + 1);
+      if (value_end == absl::string_view::npos) return nullptr;
+      trials.emplace(std::string(s.substr(pos, key_end - pos)),
+                     std::string(s.substr(key_end + 1, value_end - key_end - 1)));
+      pos = value_end + 1;
+    }
+    if (trials.empty()) return nullptr;
+    return std::make_unique<StringFieldTrials>(std::move(trials));
+  }
+
+  explicit StringFieldTrials(std::map<std::string, std::string> trials)
+      : trials_(std::move(trials)) {}
+
+  std::string Lookup(absl::string_view key) const override {
+    const auto it = trials_.find(std::string(key));
+    return it == trials_.end() ? "" : it->second;
+  }
+
+  std::unique_ptr<webrtc::FieldTrialsView> CreateCopy() const override {
+    return std::make_unique<StringFieldTrials>(trials_);
+  }
+
+ private:
+  std::map<std::string, std::string> trials_;
+};
+
 class ZeroPlayoutDelayFieldTrials final : public webrtc::FieldTrialsView {
  public:
   explicit ZeroPlayoutDelayFieldTrials(
@@ -85,7 +128,7 @@ webrtc::Environment CreateFactoryEnvironment(bool zero_playout_delay) {
   std::unique_ptr<webrtc::FieldTrialsView> field_trials;
   std::string trials = FecGlobalState::Instance().BuildFieldTrialsString();
   if (!trials.empty()) {
-    field_trials = webrtc::FieldTrials::Create(trials);
+    field_trials = StringFieldTrials::Create(trials);
     if (field_trials) {
       RTC_LOG(LS_INFO) << "using field trials: " << trials;
     } else {
